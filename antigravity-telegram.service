@@ -1,0 +1,14 @@
+[Unit]
+Description=Antigravity Telegram Bridge Daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ghenom/antigravity-telegram-bridge
+ExecStart=/usr/bin/python3 /home/ghenom/antigravity-telegram-bridge/bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
