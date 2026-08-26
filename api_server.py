@@ -136,17 +136,21 @@ class TaskManager:
         self.active_process: Optional[subprocess.Popen] = None
         self.active_task_info: Optional[Dict[str, Any]] = None
 
-    def start_task(self, cmd: List[str], cwd: str, task_info: Dict[str, Any]) -> Tuple[bool, Optional[subprocess.Popen]]:
+    def start_task(self, cmd: List[str], cwd: str, task_info: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[subprocess.Popen]]:
         with self.lock:
             if self.active_process and self.active_process.poll() is None:
                 return False, None
             self.active_task_info = task_info
+            sub_env = env or os.environ.copy()
+            sub_env["HOME"] = os.path.expanduser("~")
+            sub_env["USER"] = os.getenv("USER", "root")
             self.active_process = subprocess.Popen(
                 cmd,
                 cwd=os.path.expanduser(cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True
+                text=True,
+                env=sub_env
             )
             return True, self.active_process
 
@@ -345,7 +349,11 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 "started_at": int(start_time)
             }
 
-            started, proc = task_manager.start_task(cmd, cwd, task_info)
+            sub_env = os.environ.copy()
+            sub_env["HOME"] = os.path.expanduser("~")
+            sub_env["USER"] = os.getenv("USER", "root")
+
+            started, proc = task_manager.start_task(cmd, cwd, task_info, env=sub_env)
             if not started:
                 self._send_json(409, {
                     "error": "Another Antigravity task is currently running.",
@@ -401,8 +409,12 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             start_t = time.time()
             response_id = f"chatcmpl-{int(start_t)}"
 
+            sub_env = os.environ.copy()
+            sub_env["HOME"] = os.path.expanduser("~")
+            sub_env["USER"] = os.getenv("USER", "root")
+
             try:
-                res = subprocess.run(cmd, cwd=DEFAULT_WORKDIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
+                res = subprocess.run(cmd, cwd=DEFAULT_WORKDIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180, env=sub_env)
                 content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
 
                 if stream_mode:

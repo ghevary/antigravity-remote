@@ -76,6 +76,10 @@ def handle_run_task(arguments: Dict[str, Any]) -> str:
     if continue_session:
         cmd.append("-c")
 
+    sub_env = os.environ.copy()
+    sub_env["HOME"] = os.path.expanduser("~")
+    sub_env["USER"] = os.getenv("USER", "root")
+
     start_time = time.time()
     try:
         res = subprocess.run(
@@ -84,7 +88,8 @@ def handle_run_task(arguments: Dict[str, Any]) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=300
+            timeout=300,
+            env=sub_env
         )
         duration = round(time.time() - start_time, 1)
         output = res.stdout.strip() if res.stdout else "(No output returned)"
