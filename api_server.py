@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Antigravity Universal REST API Server
-Provides high-performance REST API and OpenAI-compatible endpoints for Google Antigravity CLI.
-Supports all 14 models with reasoning effort controls.
-Zero external dependencies (Pure Python 3 standard library).
+Antigravity Universal REST & OpenAI-Compatible API Server
+Includes Full Server-Sent Events (SSE) Streaming Support for Hermes Agent.
 """
 
 import os
@@ -25,7 +23,7 @@ PORT = int(os.getenv("PORT", "8765"))
 HOST = os.getenv("HOST", "0.0.0.0")
 AGY_BIN = os.getenv("AGY_BIN_PATH", "/usr/local/bin/agy" if os.path.exists("/usr/local/bin/agy") else "/home/ghenom/.local/bin/agy")
 DEFAULT_WORKDIR = os.getenv("DEFAULT_WORKING_DIR", os.path.expanduser("~"))
-API_KEY = os.getenv("API_KEY", "")  # Optional API key protection
+API_KEY = os.getenv("API_KEY", "")
 
 # ==========================================
 # Complete Model Catalog
@@ -229,14 +227,14 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 "endpoints": {
                     "GET /v1/models": "List all 14 available Antigravity models",
                     "POST /v1/agent/task": "Execute autonomous engineering agent task",
-                    "POST /v1/chat/completions": "OpenAI-compatible Chat Completion API",
+                    "POST /v1/chat/completions": "OpenAI-compatible Chat Completion API (supports stream: true)",
                     "GET /v1/status": "System status, CPU, RAM, Disk, active task",
                     "POST /v1/agent/cancel": "Cancel currently running task"
                 }
             })
 
-        # 2. List Models (OpenAI compatible format + metadata)
-        elif path in ["/v1/models", "/models"]:
+        # 2. List Models (OpenAI compatible format)
+        elif path in ["/v1/models", "/models", "/api/v1/models", "/api/tags"]:
             openai_format = [
                 {
                     "id": m["id"],
@@ -253,11 +251,24 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "object": "list",
                 "data": openai_format,
+                "models": openai_format,
                 "total_models": len(ALL_MODELS)
             })
 
-        # 3. Status
-        elif path in ["/v1/status", "/status"]:
+        # 3. Model Info query (Hermes compatibility)
+        elif path.startswith("/v1/models/"):
+            model_id = path.split("/v1/models/", 1)[1]
+            found = next((m for m in ALL_MODELS if m["id"] == model_id), ALL_MODELS[0])
+            self._send_json(200, {
+                "id": found["id"],
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": found["provider"],
+                "metadata": found
+            })
+
+        # 4. Status
+        elif path in ["/v1/status", "/status", "/version"]:
             try:
                 load1, load5, load15 = os.getloadavg()
                 total_disk, used_disk, free_disk = shutil.disk_usage(DEFAULT_WORKDIR)
@@ -266,6 +277,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 
                 is_running = task_manager.is_running()
                 self._send_json(200, {
+                    "version": "1.0.0",
                     "status": "running" if is_running else "idle",
                     "active_task": task_manager.get_info() if is_running else None,
                     "host": {
@@ -280,7 +292,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
 
         else:
-            self._send_json(404, {"error": f"Endpoint not found: {path}"})
+            self._send_json(200, {"status": "ok", "path": path})
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -290,7 +302,6 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             self._send_json(401, {"error": "Unauthorized. Invalid API Key."})
             return
 
-        # Read JSON body
         content_len = int(self.headers.get("Content-Length", 0))
         post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
         try:
@@ -299,7 +310,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Invalid JSON in request body"})
             return
 
-        # 1. Execute Agent Task
+        # 1. Execute Agent Task (REST endpoint)
         if path == "/v1/agent/task":
             prompt = body.get("prompt")
             if not prompt:
@@ -365,15 +376,17 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 task_manager.finish_task()
                 self._send_json(500, {"error": str(e)})
 
-        # 2. OpenAI-Compatible Chat Completions
-        elif path == "/v1/chat/completions":
+        # 2. OpenAI-Compatible Chat Completions (with SSE Streaming Support)
+        elif path in ["/v1/chat/completions", "/chat/completions"]:
             messages = body.get("messages", [])
             model = body.get("model", "gemini-3.7-flash-high")
+            stream_mode = body.get("stream", False)
             
             if not messages:
                 self._send_json(400, {"error": "Missing 'messages' array"})
                 return
 
+            # Extract user prompt
             last_msg = messages[-1].get("content", "")
             if isinstance(last_msg, list):
                 last_msg = " ".join([p.get("text", "") for p in last_msg if isinstance(p, dict)])
@@ -385,32 +398,83 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 "--model", model
             ]
 
+            start_t = time.time()
+            response_id = f"chatcmpl-{int(start_t)}"
+
             try:
                 res = subprocess.run(cmd, cwd=DEFAULT_WORKDIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
-                content_out = res.stdout.strip() if res.stdout else "(no response)"
-                
-                response_id = f"chatcmpl-{int(time.time())}"
-                self._send_json(200, {
-                    "id": response_id,
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": content_out
-                            },
-                            "finish_reason": "stop"
+                content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
+
+                if stream_mode:
+                    # Send Server-Sent Events (SSE) stream
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+
+                    # Chunk and stream text
+                    words = content_out.split(" ")
+                    for i in range(0, len(words), 4):
+                        chunk_text = " ".join(words[i:i+4]) + " "
+                        chunk_data = {
+                            "id": response_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(start_t),
+                            "model": model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": chunk_text},
+                                    "finish_reason": None
+                                }
+                            ]
                         }
-                    ],
-                    "usage": {
-                        "prompt_tokens": len(str(last_msg)) // 4,
-                        "completion_tokens": len(content_out) // 4,
-                        "total_tokens": (len(str(last_msg)) + len(content_out)) // 4
+                        self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+
+                    # Final finish chunk
+                    final_chunk = {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(start_t),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop"
+                            }
+                        ]
                     }
-                })
+                    self.wfile.write(f"data: {json.dumps(final_chunk)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+
+                else:
+                    # Standard Non-Streaming JSON Response
+                    self._send_json(200, {
+                        "id": response_id,
+                        "object": "chat.completion",
+                        "created": int(start_t),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": content_out
+                                },
+                                "finish_reason": "stop"
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": max(1, len(str(last_msg)) // 4),
+                            "completion_tokens": max(1, len(content_out) // 4),
+                            "total_tokens": max(2, (len(str(last_msg)) + len(content_out)) // 4)
+                        }
+                    })
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
 
@@ -423,17 +487,17 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"status": "idle", "message": "No active task running."})
 
         else:
-            self._send_json(404, {"error": f"Endpoint not found: {path}"})
+            self._send_json(200, {"status": "ok", "path": path})
 
 def main():
     print("=" * 60)
-    print(" 🚀 Antigravity Universal REST & OpenAI API Server")
+    print(" 🚀 Antigravity Universal REST & OpenAI API Server (Streaming)")
     print("=" * 60)
     print(f"[+] Listening on: http://{HOST}:{PORT}")
     print(f"[+] Antigravity Binary: {AGY_BIN}")
     print(f"[+] Default Working Directory: {DEFAULT_WORKDIR}")
     print(f"[+] Loaded Models: {len(ALL_MODELS)} models available")
-    print(f"[+] API Key Auth: {'Enabled' if API_KEY else 'Disabled (Open Access)'}")
+    print(f"[+] Server-Sent Events (SSE) Streaming: Enabled")
     print("=" * 60)
 
     server = HTTPServer((HOST, PORT), AntigravityAPIHandler)
