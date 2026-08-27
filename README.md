@@ -1,26 +1,30 @@
 <div align="center">
 
-# 🚀 Antigravity Remote
+# 🚀 Antigravity Remote & Hermes Agent Integration
 
-**Control Google Antigravity AI Agent directly from Telegram on any device.**
+**Control Google Antigravity AI Agent remotely via Telegram and integrate seamlessly with Nous Research Hermes Agent.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Telegram Bot API](https://img.shields.io/badge/Telegram-Bot%20API-2CA5E0.svg?logo=telegram&logoColor=white)](https://core.telegram.org/bots/api)
-[![Antigravity CLI](https://img.shields.io/badge/Antigravity-CLI%20Enabled-4285F4.svg?logo=google&logoColor=white)](https://antigravity.google)
+[![Google Antigravity CLI](https://img.shields.io/badge/Antigravity-CLI%20Enabled-4285F4.svg?logo=google&logoColor=white)](https://antigravity.google)
+[![Hermes Agent](https://img.shields.io/badge/Hermes-Agent%20Integrated-F5A623.svg)](https://github.com/NousResearch/hermes-agent)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol%20Compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Zero Dependency](https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Python)-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <br/>
 
-> **Short Description (Tagline)**:
-> *A lightweight, zero-dependency Telegram bot bridge to control Google Antigravity CLI (`agy`) remotely. Pair program, switch AI models with 1 click, execute terminal tasks, and schedule background automation directly from Telegram.*
+> **Tagline**:
+> *A high-performance, zero-dependency bridge to control Google Antigravity CLI (`agy`) remotely. Features direct Telegram remote control, OpenAI-compatible REST API with SSE Streaming, and native Model Context Protocol (MCP) integration for **Nous Research Hermes Agent**.*
 
 <br/>
 
 <p align="center">
-  <img src="assets/demo-telegram.png" alt="Antigravity Telegram Conversation Demo" width="380" />
+  <img src="assets/hermes-agent.png" alt="Hermes Agent Mascot & Logo" width="220" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/command-reference.png" alt="Command Reference and Help Screen" width="520" />
+  <img src="assets/demo-telegram.png" alt="Antigravity Telegram Conversation Demo" width="340" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/command-reference.png" alt="Command Reference and Help Screen" width="460" />
 </p>
 
 </div>
@@ -29,15 +33,92 @@
 
 ## 🌟 Highlights & Key Features
 
-- 📦 **Zero External Dependencies**: Built entirely with pure Python 3 standard libraries (`urllib`, `json`, `subprocess`, `asyncio`). Runs instantly without `pip install` issues.
-- 🧠 **1-Click Model & Effort Picker**: Switch between **Gemini 3.7 Flash**, **Gemini 3.1 Pro**, **Claude Sonnet 4.6 (Thinking)**, **Claude Opus**, and **GPT-OSS** using interactive Telegram inline buttons.
-- 🔒 **Ironclad Security Whitelist**: Restricts bot access strictly to your whitelisted Telegram User IDs. Unauthorized users are immediately blocked.
-- 💡 **Side Questions (`/btw`)**: Ask parallel or quick side questions without interrupting or polluting your active task session context.
-- ⏰ **Autonomous Task Scheduling (`/schedule`)**: Run one-time timers (`/schedule in 10m ...`) or recurring cron schedules (`/schedule every 30m ...`) that execute and report back on Telegram.
+- 🧠 **Dual Architecture (Standalone & Hermes Agent)**:
+  - **Standalone Mode**: Direct Telegram Bot (`bot.py`) with 1-click model picker and workspace control.
+  - **Hermes Gateway Mode**: Integrates with [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) via **MCP Server** (`mcp_server.py`) and **OpenAI REST API** (`api_server.py`).
+- ⚡ **Zero External Dependencies**: Core daemons are written entirely with pure Python 3 standard libraries. No `pip install` conflicts.
+- 🎛️ **1-Click Model & Effort Picker**: Switch between **Gemini 3.7 Flash**, **Gemini 3.1 Pro**, **Claude Sonnet 4.6 (Thinking)**, **Claude Opus**, and **GPT-OSS** using interactive Telegram inline buttons.
+- 📡 **Universal REST API with SSE Streaming**: High-speed OpenAI-compatible `/v1/chat/completions` supporting Server-Sent Events (`text/event-stream`).
+- 🔒 **Security Whitelist**: Strictly restricts bot and server access to whitelisted Telegram User IDs.
+- ⏰ **Autonomous Task Scheduling (`/schedule`)**: Run timers (`/schedule in 10m ...`) or recurring cron schedules (`/schedule every 30m ...`).
 - 📁 **Remote Workspace Control**: Browse files (`/ls`), switch project folders (`/cd`), inspect paths (`/pwd`), and download generated artifacts directly to your chat (`/getfile`).
-- 💻 **Direct Host Shell Access**: Execute quick bash commands on your host server (`/exec git status`, `/exec docker ps`).
-- 🔄 **Conversation Persistence (`/resume`)**: Browse, switch, or resume past agent conversation sessions seamlessly.
-- 🛡️ **24/7 Systemd Daemon Support**: Ready-to-use background service file for automated auto-start on boot.
+
+---
+
+## 🤖 Hermes Agent Integration (Nous Research)
+
+Connect **Google Antigravity** to your **Hermes Agent** multi-platform gateway to combine Hermes's persistent memory and voice note processing with Antigravity's heavy software engineering capabilities.
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │      📱 User via Telegram / Discord     │
+                    │         (Text / Voice Notes / TTS)      │
+                    └────────────────────┬────────────────────┘
+                                         │
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │      🧠 Hermes Agent (Gateway)          │
+                    │     (Memory, Persona & Multi-Agent)     │
+                    └────────────┬───────────────────┬────────┘
+                                 │                   │
+                     (MCP Tool Calling)       (OpenAI Provider API)
+                                 │                   │
+                                 ▼                   ▼
+                    ┌─────────────────────┐ ┌─────────────────────┐
+                    │  MCP Server Tool    │ │   REST API Server   │
+                    │  (`mcp_server.py`)  │ │  (`api_server.py`)  │
+                    └──────────┬──────────┘ └──────────┬──────────┘
+                               │                       │
+                               └───────────┬───────────┘
+                                           │
+                                           ▼
+                    ┌─────────────────────────────────────────┐
+                    │      💻 Google Antigravity CLI          │
+                    │    (Codebase, File Edits, Subagents)    │
+                    └─────────────────────────────────────────┘
+```
+
+### 1. Register as an MCP Server in Hermes
+Add Antigravity to your Hermes configuration (`~/.hermes/config.yaml` or profile configs in `~/.hermes/profiles/<profile>/config.yaml`):
+
+```yaml
+mcp_servers:
+  antigravity:
+    command: "python3"
+    args: ["/root/mcp_server.py"]
+    env:
+      DEFAULT_WORKING_DIR: "/root"
+```
+
+### 2. Register as a Custom LLM Provider in Hermes
+Add Antigravity's REST API to `custom_providers` so it appears in Hermes's `/model` picker on Telegram:
+
+```yaml
+custom_providers:
+  - name: "Antigravity (12)"
+    base_url: "http://127.0.0.1:8765/v1"
+    api_key: "antigravity"
+    model: "gemini-3.7-flash-high"
+```
+
+---
+
+## 🧠 Supported Antigravity Models (12 Models)
+
+| Model ID | Model Name | Provider | Default Effort |
+| :--- | :--- | :--- | :--- |
+| `gemini-3.7-flash-high` | Gemini 3.7 Flash (High Reasoning) | Google DeepMind | High *(Default)* |
+| `gemini-3.7-flash-medium` | Gemini 3.7 Flash (Medium Reasoning) | Google DeepMind | Medium |
+| `gemini-3.7-flash-low` | Gemini 3.7 Flash (Low Reasoning) | Google DeepMind | Low |
+| `gemini-3.6-flash-high` | Gemini 3.6 Flash (High) | Google DeepMind | High |
+| `gemini-3.6-flash-medium` | Gemini 3.6 Flash (Medium) | Google DeepMind | Medium |
+| `gemini-3.6-flash-low` | Gemini 3.6 Flash (Low) | Google DeepMind | Low |
+| `gemini-3.5-flash-high` | Gemini 3.5 Flash (High) | Google DeepMind | High |
+| `gemini-3.1-pro-high` | Gemini 3.1 Pro (High) | Google DeepMind | High |
+| `gemini-3.1-pro-low` | Gemini 3.1 Pro (Low) | Google DeepMind | Low |
+| `claude-sonnet-4-6` | Claude Sonnet 4.6 (Thinking) | Anthropic | High |
+| `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) | Anthropic | High |
+| `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | OpenAI / OSS | Medium |
 
 ---
 
@@ -70,52 +151,31 @@
 
 ## 🚀 Quick Start Guide
 
-### 1. Prerequisites
-- Linux / macOS with **Python 3.10+**
-- Google Antigravity CLI (`agy`) installed and authenticated on the host
-
-### 2. Clone the Repository
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/ghevary/antigravity-remote.git
 cd antigravity-remote
 ```
 
-### 3. Create Telegram Bot & Configure
-1. Open Telegram and message [@BotFather](https://t.me/BotFather) to create a new bot (`/newbot`). Copy your **HTTP API Token**.
-2. Message [@userinfobot](https://t.me/userinfobot) to get your numerical **Telegram User ID**.
-3. Create your `.env` configuration file:
+### 2. Configure Telegram Bot (`.env`)
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy your **Token**.
+2. Get your Telegram numerical ID from [@userinfobot](https://t.me/userinfobot).
+3. Copy template and edit `.env`:
 ```bash
 cp .env.example .env
 nano .env
 ```
-4. Fill in your credentials:
 ```env
-TELEGRAM_BOT_TOKEN="123456789:ABCdefGHI..."
+TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
 ALLOWED_USER_IDS="YOUR_TELEGRAM_USER_ID"
 DEFAULT_WORKING_DIR="/home/yourusername"
 AGY_BIN_PATH="/home/yourusername/.local/bin/agy"
 AGY_EFFORT="high"
 ```
 
----
+### 3. Running Services
 
-## 🏃 Running the Bot
-
-### Option A: Foreground (Testing)
-```bash
-./start.sh
-```
-
-### Option B: Background Daemon
-```bash
-./start.sh --bg
-```
-To stop the background daemon:
-```bash
-./stop.sh
-```
-
-### Option C: 24/7 Systemd Service (Auto-start on Boot)
+#### Run Telegram Bot Daemon (24/7 Service)
 ```bash
 mkdir -p ~/.config/systemd/user
 cp antigravity-telegram.service ~/.config/systemd/user/
@@ -123,22 +183,15 @@ systemctl --user daemon-reload
 systemctl --user enable --now antigravity-telegram
 ```
 
-Check service status and logs:
+#### Run Universal REST API & OpenAI SSE Server (Port 8765)
 ```bash
-systemctl --user status antigravity-telegram
-journalctl --user -u antigravity-telegram -f
+sudo cp antigravity-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now antigravity-api
 ```
-
----
-
-## 🔒 Security Recommendations
-
-- ⚠️ **Never commit your `.env` file!** It contains your secret bot token.
-- 🛡️ **Always whitelist your `ALLOWED_USER_IDS`**: Since Antigravity can execute terminal commands and modify files, ensure only your own Telegram account has access.
-- 🔐 For multi-user setups, separate IDs by commas in `ALLOWED_USER_IDS="12345678,87654321"`.
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is open-source and licensed under the [MIT License](LICENSE).
