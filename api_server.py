@@ -13,8 +13,13 @@ import shutil
 import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 from typing import Dict, Any, Optional, List, Tuple
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 # ==========================================
 # Configuration
@@ -405,6 +410,9 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             if system_prompts:
                 combined_prompt = f"[System Context: {' '.join(system_prompts)}]\n\n{combined_prompt}"
 
+            if len(combined_prompt) > 80000:
+                combined_prompt = combined_prompt[:20000] + "\n...[middle context truncated]...\n" + combined_prompt[-60000:]
+
             cmd = [
                 AGY_BIN,
                 "-p", combined_prompt,
@@ -569,7 +577,7 @@ def main():
     print(f"[+] Server-Sent Events (SSE) Streaming: Enabled")
     print("=" * 60)
 
-    server = HTTPServer((HOST, PORT), AntigravityAPIHandler)
+    server = ThreadedHTTPServer((HOST, PORT), AntigravityAPIHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
