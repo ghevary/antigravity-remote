@@ -417,7 +417,8 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 AGY_BIN,
                 "-p", combined_prompt,
                 "--dangerously-skip-permissions",
-                "--model", model
+                "--model", model,
+                "--print-timeout", "10m"
             ]
 
             start_t = time.time()
@@ -526,7 +527,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
-                        timeout=180,
+                        timeout=600,
                         env=sub_env
                     )
                     content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
