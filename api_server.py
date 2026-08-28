@@ -384,7 +384,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 task_manager.finish_task()
                 self._send_json(500, {"error": str(e)})
 
-        # 2. OpenAI-Compatible Chat Completions (with SSE Streaming Support)
+        # 2. OpenAI-Compatible Chat Completions (Real-Time SSE Streaming)
         elif path in ["/v1/chat/completions", "/chat/completions"]:
             messages = body.get("messages", [])
             model = body.get("model", "gemini-3.7-flash-high")
@@ -394,57 +394,88 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Missing 'messages' array"})
                 return
 
-            # Extract user prompt
+            # Extract user prompt (supporting both string and multimodal parts)
             last_msg = messages[-1].get("content", "")
             if isinstance(last_msg, list):
                 last_msg = " ".join([p.get("text", "") for p in last_msg if isinstance(p, dict)])
 
+            # Also check if system prompt exists
+            system_prompts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+            combined_prompt = str(last_msg)
+            if system_prompts:
+                combined_prompt = f"[System Context: {' '.join(system_prompts)}]\n\n{combined_prompt}"
+
             cmd = [
                 AGY_BIN,
-                "-p", str(last_msg),
+                "-p", combined_prompt,
                 "--dangerously-skip-permissions",
                 "--model", model
             ]
 
             start_t = time.time()
             response_id = f"chatcmpl-{int(start_t)}"
-
             sub_env = os.environ.copy()
             sub_env["HOME"] = os.path.expanduser("~")
             sub_env["USER"] = os.getenv("USER", "root")
 
-            try:
-                res = subprocess.run(cmd, cwd=DEFAULT_WORKDIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180, env=sub_env)
-                content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
+            if stream_mode:
+                # Send headers immediately to prevent client timeout
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
 
-                if stream_mode:
-                    # Send Server-Sent Events (SSE) stream
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "keep-alive")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
+                try:
+                    # Send initial role chunk immediately
+                    initial_chunk = {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(start_t),
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": ""},
+                                "finish_reason": None
+                            }
+                        ]
+                    }
+                    self.wfile.write(f"data: {json.dumps(initial_chunk)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
 
-                    # Chunk and stream text
-                    words = content_out.split(" ")
-                    for i in range(0, len(words), 4):
-                        chunk_text = " ".join(words[i:i+4]) + " "
-                        chunk_data = {
-                            "id": response_id,
-                            "object": "chat.completion.chunk",
-                            "created": int(start_t),
-                            "model": model,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"content": chunk_text},
-                                    "finish_reason": None
-                                }
-                            ]
-                        }
-                        self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
-                        self.wfile.flush()
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=DEFAULT_WORKDIR,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        env=sub_env
+                    )
+
+                    while True:
+                        line = proc.stdout.readline()
+                        if not line and proc.poll() is not None:
+                            break
+                        if line:
+                            # Stream text chunk
+                            chunk_data = {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(start_t),
+                                "model": model,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": line},
+                                        "finish_reason": None
+                                    }
+                                ]
+                            }
+                            self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                            self.wfile.flush()
 
                     # Final finish chunk
                     final_chunk = {
@@ -464,8 +495,34 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
 
-                else:
-                    # Standard Non-Streaming JSON Response
+                except (BrokenPipeError, ConnectionResetError):
+                    # Client disconnected or timed out
+                    if 'proc' in locals() and proc.poll() is None:
+                        proc.terminate()
+                except Exception as e:
+                    if 'proc' in locals() and proc.poll() is None:
+                        proc.terminate()
+                    try:
+                        err_chunk = {"error": str(e)}
+                        self.wfile.write(f"data: {json.dumps(err_chunk)}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+
+            else:
+                # Non-streaming response
+                try:
+                    res = subprocess.run(
+                        cmd,
+                        cwd=DEFAULT_WORKDIR,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        timeout=180,
+                        env=sub_env
+                    )
+                    content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
+
                     self._send_json(200, {
                         "id": response_id,
                         "object": "chat.completion",
@@ -487,8 +544,8 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                             "total_tokens": max(2, (len(str(last_msg)) + len(content_out)) // 4)
                         }
                     })
-            except Exception as e:
-                self._send_json(500, {"error": str(e)})
+                except Exception as e:
+                    self._send_json(500, {"error": str(e)})
 
         # 3. Cancel Task
         elif path == "/v1/agent/cancel":
