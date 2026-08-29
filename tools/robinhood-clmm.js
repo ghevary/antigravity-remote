@@ -3,12 +3,13 @@
  * Meridian Robinhood Chain CLMM Paper Trading Engine (Uniswap v3/v4)
  * Strictly isolated from Solana / Meteora DLMM paper-trading records.
  * Rules strictly mirrored from Hermes profile ghepappo (paper_strategy_policy.json):
- * - 2-consecutive-check OOR / fee-decay defensive exit
+ * - 2-consecutive-check OOR / fee-decay defensive exit with 10-minute debounce
  * - Hard stop: -4.0% | Soft stop: -3.0% | Take Profit: +3.0% (Review zone: +2.0%)
- * - Accurate CLMM mark-to-market valuation (no hardcoded -15% floor)
- * - True elapsed-time fee accrual (no minimum 6-minute inflation)
+ * - Accurate continuous CLMM mark-to-market valuation
+ * - True elapsed-time fee accrual (no artificial inflation)
  * - Direct pair lookup for deployment and monitoring (no silent fallback)
- * - Manual position close subcommand
+ * - Live price & PnL refresh at the exact moment of manual close
+ * - Automatic compounding size default: Math.max(60, equity - 5)
  */
 
 import fs from "fs";
@@ -31,6 +32,7 @@ if (!fs.existsSync(DATA_DIR)) {
 // Gas cost model for Robinhood Chain (Arbitrum Orbit L2):
 // 3 transactions (deploy, fee harvest/collect, close/burn) * ~0.00003 ETH (~$0.075 USD)
 const GAS_COST_PER_ROUNDTRIP_USD = 0.15;
+const DEBOUNCE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes debounce between consecutive check slots
 
 function loadPositions() {
   if (fs.existsSync(POSITIONS_FILE)) {
@@ -45,6 +47,20 @@ function loadPositions() {
 
 function savePositions(data) {
   fs.writeFileSync(POSITIONS_FILE, JSON.stringify(data, null, 2), "utf8");
+}
+
+export function getRecommendedCompoundingSize() {
+  const data = loadPositions();
+  const realizedPnL = Number(data.cumulative_pnl_usd) || 0.0;
+  const unrealizedPnL = (data.positions || []).reduce((acc, p) => acc + (Number(p.currentPnLUsd) || 0), 0);
+  const baseEquity = 60.0;
+  const totalEquity = baseEquity + realizedPnL + unrealizedPnL;
+  // Meteora rule: size = Math.max(60, equity - 5)
+  const size = Math.max(60.0, totalEquity - 5.0);
+  return {
+    recommendedSize: Number(size.toFixed(2)),
+    totalEquity: Number(totalEquity.toFixed(2))
+  };
 }
 
 // Multi-source discovery on DEXScreener
@@ -103,22 +119,19 @@ function computeClmmValue(entryPrice, currentPrice, lowerPrice, upperPrice, capi
   const sqrtPb = Math.sqrt(upperPrice);
   const sqrtP0 = Math.sqrt(entryPrice);
 
-  // Liquidity L corresponding to initial capital C at P0:
-  // C = L * ( (sqrtP0 - sqrtPa) + (1/sqrtP0 - 1/sqrtPb)*P0 )
-  //   = L * (2 * sqrtP0 - sqrtPa - P0 / sqrtPb)
   const denom = (2 * sqrtP0 - sqrtPa - (entryPrice / sqrtPb));
   if (denom <= 0) return capital * (currentPrice / entryPrice);
 
   const L = capital / denom;
 
   if (currentPrice < lowerPrice) {
-    // 100% in base asset x: x = L * (1/sqrtPa - 1/sqrtPb)
+    // 100% in base asset x
     const amountX = L * ((1 / sqrtPa) - (1 / sqrtPb));
     return amountX * currentPrice;
   } else if (currentPrice > upperPrice) {
-    // 100% in quote asset y: y = L * (sqrtPb - sqrtPa)
+    // 100% in quote asset y (in USD)
     const amountY = L * (sqrtPb - sqrtPa);
-    return amountY; // in USD
+    return amountY;
   } else {
     // In range: holds both x and y
     const amountX = L * ((1 / sqrtP) - (1 / sqrtPb));
@@ -182,11 +195,15 @@ export async function scanRobinhoodPools() {
   return scored;
 }
 
-export async function deployRobinhoodPaperPosition({ pairAddress, amountUsd = 60.0, rangePct = 15.0 }) {
+export async function deployRobinhoodPaperPosition({ pairAddress, amountUsd = null, rangePct = 15.0 }) {
   if (!pairAddress) {
     console.error("❌ Error: You must specify a target --pair <pairAddress>. No silent fallback permitted.");
     return false;
   }
+
+  // Refinement 3: Compounding Default Size
+  const { recommendedSize, totalEquity } = getRecommendedCompoundingSize();
+  const effectiveCapital = (amountUsd && Number(amountUsd) > 0) ? Number(amountUsd) : recommendedSize;
 
   console.log(`🔍 Resolving pair ${pairAddress} directly on Robinhood Chain...`);
   const targetPair = await fetchDirectPair(pairAddress);
@@ -213,7 +230,7 @@ export async function deployRobinhoodPaperPosition({ pairAddress, amountUsd = 60
     symbol: `${base}/${quote}`,
     baseSymbol: base,
     quoteSymbol: quote,
-    capitalUsd: amountUsd,
+    capitalUsd: effectiveCapital,
     entryPriceUsd: currentPrice,
     lowerPriceUsd: lowerPrice,
     upperPriceUsd: upperPrice,
@@ -232,7 +249,7 @@ export async function deployRobinhoodPaperPosition({ pairAddress, amountUsd = 60
   console.log(`✅ [Robinhood Chain] Paper Position Deployed:`);
   console.log(`   ID: ${posId}`);
   console.log(`   Pool: ${base}/${quote} (${targetPair.pairAddress})`);
-  console.log(`   Capital: $${amountUsd}`);
+  console.log(`   Capital: $${effectiveCapital.toFixed(2)} ${amountUsd ? "(User Specified)" : `(Auto Compounding: Total Equity $${totalEquity.toFixed(2)})`}`);
   console.log(`   Entry Price: $${currentPrice.toFixed(6)}`);
   console.log(`   Range: [$${lowerPrice.toFixed(6)} - $${upperPrice.toFixed(6)}] (±${rangePct}%)`);
   return newPosition;
@@ -281,10 +298,11 @@ export async function monitorRobinhoodPositions() {
     const pnlPct = (netPnLUsd / pos.capitalUsd) * 100;
     pos.currentPnLUsd = netPnLUsd;
 
-    // 4. Record to monitor_checks history array
+    // Refinement 2: Debounce interval for consecutive checks (10-minute window)
     pos.monitor_checks = pos.monitor_checks || [];
     const currentCheck = {
       timestamp: new Date().toISOString(),
+      time_ms: now,
       price: currentPrice,
       in_range: inRange,
       fee_ratio_pct: Number(feeLiqRatio.toFixed(3)),
@@ -292,9 +310,24 @@ export async function monitorRobinhoodPositions() {
       pnl_usd: Number(netPnLUsd.toFixed(2)),
       fee_usd: Number(pos.accumulatedFeeUsd.toFixed(3))
     };
-    pos.monitor_checks.push(currentCheck);
 
-    const prevCheck = pos.monitor_checks.length >= 2 ? pos.monitor_checks[pos.monitor_checks.length - 2] : null;
+    let prevCheck = null;
+    if (pos.monitor_checks.length > 0) {
+      const lastCheck = pos.monitor_checks[pos.monitor_checks.length - 1];
+      const msSinceLast = now - (lastCheck.time_ms || new Date(lastCheck.timestamp).getTime());
+
+      if (msSinceLast < DEBOUNCE_INTERVAL_MS) {
+        // Within debounce window (< 10 min): update current check slot instead of creating a new consecutive check
+        pos.monitor_checks[pos.monitor_checks.length - 1] = currentCheck;
+        prevCheck = pos.monitor_checks.length >= 2 ? pos.monitor_checks[pos.monitor_checks.length - 2] : null;
+      } else {
+        // Outside debounce window (>= 10 min): genuine separate consecutive check
+        pos.monitor_checks.push(currentCheck);
+        prevCheck = lastCheck;
+      }
+    } else {
+      pos.monitor_checks.push(currentCheck);
+    }
 
     console.log(`\n- [${pos.id}] ${pos.symbol} (${pos.pairAddress.slice(0, 10)}...):`);
     console.log(`   Price: $${currentPrice.toFixed(6)} | Range: [$${pos.lowerPriceUsd.toFixed(6)} - $${pos.upperPriceUsd.toFixed(6)}]`);
@@ -306,7 +339,7 @@ export async function monitorRobinhoodPositions() {
     let shouldExit = false;
     let exitReason = "";
 
-    // A. 2-consecutive-check OOR rule
+    // A. 2-consecutive-check OOR rule (guarded by 10-minute debounce)
     if (!inRange && prevCheck && !prevCheck.in_range) {
       shouldExit = true;
       exitReason = "OOR_2_CONSECUTIVE_CHECKS";
@@ -346,6 +379,7 @@ export async function monitorRobinhoodPositions() {
     if (shouldExit) {
       pos.status = "CLOSED_PAPER";
       pos.closedAt = new Date().toISOString();
+      pos.exitPriceUsd = currentPrice;
       pos.exitReason = exitReason;
       data.closed_positions = data.closed_positions || [];
       data.closed_positions.push(pos);
@@ -363,7 +397,8 @@ export async function monitorRobinhoodPositions() {
   return data.positions;
 }
 
-export function manualClosePosition(identifier) {
+// Refinement 1: Live Refresh at the exact moment of manual close
+export async function manualClosePosition(identifier) {
   if (!identifier) {
     console.log("Usage: node robinhood-clmm.js close <posId_or_pairAddress>");
     return false;
@@ -379,15 +414,42 @@ export function manualClosePosition(identifier) {
   }
 
   const pos = data.positions.splice(idx, 1)[0];
+  console.log(`🔄 Fetching live price for ${pos.symbol} before closing...`);
+
+  const livePair = await fetchDirectPair(pos.pairAddress);
+  const now = Date.now();
+  const currentPrice = livePair ? (Number(livePair.priceUsd) || pos.entryPriceUsd) : pos.entryPriceUsd;
+  const vol24h = livePair ? (Number(livePair.volume?.h24) || 0) : 0;
+  const liqUsd = livePair ? (Number(livePair.liquidity?.usd) || 10000) : 10000;
+  const est24hFees = vol24h * 0.003;
+  const inRange = currentPrice >= pos.lowerPriceUsd && currentPrice <= pos.upperPriceUsd;
+
+  // Accrue fee up to exact second of closure
+  const elapsedMs = Math.max(0, now - (pos.lastCheckTime || now));
+  const elapsedHours = elapsedMs / 3600000;
+  if (elapsedHours >= 0.005) {
+    const poolShare = Math.min(1.0, pos.capitalUsd / Math.max(liqUsd, 1000));
+    const hourlyPoolFee = est24hFees / 24;
+    const feeEarned = inRange ? (hourlyPoolFee * poolShare * elapsedHours) : 0.0;
+    pos.accumulatedFeeUsd += feeEarned;
+    pos.lastCheckTime = now;
+  }
+
+  const currentGrossValue = computeClmmValue(pos.entryPriceUsd, currentPrice, pos.lowerPriceUsd, pos.upperPriceUsd, pos.capitalUsd);
+  const grossPnLUsd = (currentGrossValue - pos.capitalUsd) + pos.accumulatedFeeUsd;
+  const netPnLUsd = grossPnLUsd - GAS_COST_PER_ROUNDTRIP_USD;
+  pos.currentPnLUsd = netPnLUsd;
+
   pos.status = "CLOSED_PAPER";
   pos.closedAt = new Date().toISOString();
+  pos.exitPriceUsd = currentPrice;
   pos.exitReason = "MANUAL_USER_OVERRIDE";
   data.closed_positions = data.closed_positions || [];
   data.closed_positions.push(pos);
   data.cumulative_pnl_usd = (data.cumulative_pnl_usd || 0.0) + pos.currentPnLUsd;
 
   savePositions(data);
-  console.log(`✅ [Manual Close] Position [${pos.id}] ${pos.symbol} manually closed.`);
+  console.log(`✅ [Manual Close] Position [${pos.id}] ${pos.symbol} closed at live price $${currentPrice.toFixed(6)}.`);
   console.log(`   Realized Net PnL: ${pos.currentPnLUsd >= 0 ? "+" : ""}$${pos.currentPnLUsd.toFixed(2)} USD`);
   console.log(`   Exit Reason: MANUAL_USER_OVERRIDE`);
   return true;
@@ -401,6 +463,7 @@ export function printRobinhoodSummary() {
   const unrealizedPnL = (data.positions || []).reduce((acc, p) => acc + (Number(p.currentPnLUsd) || 0), 0);
   const baseEquity = 60.0;
   const currentEquity = baseEquity + realizedPnL + unrealizedPnL;
+  const { recommendedSize } = getRecommendedCompoundingSize();
 
   console.log("\n============================================================");
   console.log(" 🟣 Robinhood Chain (EVM L2) Paper-Trading Analytics");
@@ -414,8 +477,9 @@ export function printRobinhoodSummary() {
   console.log(`[+] Realized PnL: ${realizedPnL >= 0 ? "+" : ""}$${realizedPnL.toFixed(2)} USD`);
   console.log(`[+] Unrealized PnL: ${unrealizedPnL >= 0 ? "+" : ""}$${unrealizedPnL.toFixed(2)} USD`);
   console.log(`[+] Total Recycled Paper Equity: $${currentEquity.toFixed(2)} USD (Base: $${baseEquity.toFixed(2)})`);
+  console.log(`[+] Next Compounding Default Size: $${recommendedSize.toFixed(2)} USD`);
   console.log("============================================================\n");
-  return { openCount, closedCount, realizedPnL, unrealizedPnL, currentEquity };
+  return { openCount, closedCount, realizedPnL, unrealizedPnL, currentEquity, recommendedSize };
 }
 
 async function main() {
@@ -425,14 +489,14 @@ async function main() {
     await scanRobinhoodPools();
   } else if (cmd === "deploy") {
     const pairArg = process.argv[3] || "";
-    const amountArg = process.argv[4] ? Number(process.argv[4]) : 60.0;
+    const amountArg = process.argv[4] ? Number(process.argv[4]) : null;
     const rangeArg = process.argv[5] ? Number(process.argv[5]) : 15.0;
     await deployRobinhoodPaperPosition({ pairAddress: pairArg, amountUsd: amountArg, rangePct: rangeArg });
   } else if (cmd === "monitor") {
     await monitorRobinhoodPositions();
   } else if (cmd === "close") {
     const idArg = process.argv[3] || "";
-    manualClosePosition(idArg);
+    await manualClosePosition(idArg);
   } else if (cmd === "summary" || cmd === "status") {
     printRobinhoodSummary();
   } else {
