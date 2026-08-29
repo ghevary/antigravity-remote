@@ -349,11 +349,16 @@ def run_agy_worker(session: UserSession, prompt: str, is_side_question: bool = F
                 output_lines.append(line)
                 clean_line = line.strip()
 
-                # Detect meaningful intermediate progress/step updates
+                # Detect meaningful intermediate progress/step updates across ALL task types
                 is_step = any([
-                    clean_line.startswith(("Sedang ", "Memeriksa ", "Menjalankan ", "Membuat ", "Mengupdate ", "Mengunduh ", "Menganalisis ", "Backup ")),
-                    clean_line.startswith(("[+]", "[*]", ">>>", "Step ", "Task: ")),
-                    clean_line.startswith(("Reading ", "Writing ", "Executing ", "Updating ", "Checking ", "Found ", "Scanning "))
+                    # Indonesian progress verbs
+                    clean_line.startswith(("Sedang ", "Memeriksa ", "Menjalankan ", "Membuat ", "Mengupdate ", "Memperbarui ", "Mengunduh ", "Menganalisis ", "Menyimpan ", "Menghubungkan ", "Menyiapkan ", "Membaca ", "Menulis ", "Backup ", "Proses ")),
+                    # English progress verbs & labels
+                    clean_line.startswith(("Reading ", "Writing ", "Executing ", "Updating ", "Checking ", "Found ", "Scanning ", "Running ", "Creating ", "Analyzing ", "Installing ", "Downloading ", "Connecting ", "Preparing ", "Searching ", "Deploying ", "Building ")),
+                    # Action symbols & step counters
+                    clean_line.startswith(("[+]", "[*]", ">>>", "Step ", "Task: ", "Action: ", "Tool:", "Phase ")),
+                    # Step emojis
+                    any(clean_line.startswith(em) for em in ["🔍", "🛠️", "📁", "🚀", "📦", "⚙️", "📝", "💾", "🔧", "⚡", "🔄", "⏳", "📊", "🎯", "✅", "⚠️"])
                 ])
 
                 if is_step and len(clean_line) > 5 and clean_line not in sent_progress_lines:
