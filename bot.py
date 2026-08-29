@@ -337,7 +337,33 @@ def run_agy_worker(session: UserSession, prompt: str, is_side_question: bool = F
                 bufsize=1
             )
 
-        stdout_data, _ = proc.communicate()
+        output_lines = []
+        last_progress_time = 0.0
+        sent_progress_lines = set()
+
+        while True:
+            line = proc.stdout.readline()
+            if not line and proc.poll() is not None:
+                break
+            if line:
+                output_lines.append(line)
+                clean_line = line.strip()
+
+                # Detect meaningful intermediate progress/step updates
+                is_step = any([
+                    clean_line.startswith(("Sedang ", "Memeriksa ", "Menjalankan ", "Membuat ", "Mengupdate ", "Mengunduh ", "Menganalisis ", "Backup ")),
+                    clean_line.startswith(("[+]", "[*]", ">>>", "Step ", "Task: ")),
+                    clean_line.startswith(("Reading ", "Writing ", "Executing ", "Updating ", "Checking ", "Found ", "Scanning "))
+                ])
+
+                if is_step and len(clean_line) > 5 and clean_line not in sent_progress_lines:
+                    now = time.time()
+                    if now - last_progress_time >= 1.0:
+                        sent_progress_lines.add(clean_line)
+                        send_message(chat_id, f"⚡ {clean_line}")
+                        last_progress_time = now
+
+        proc.wait()
         returncode = proc.returncode
 
         stop_typing.set()
@@ -348,6 +374,7 @@ def run_agy_worker(session: UserSession, prompt: str, is_side_question: bool = F
                 session.active_process = None
                 session.active_task_name = None
 
+        stdout_data = "".join(output_lines)
         output = stdout_data.strip() if stdout_data else "(No output returned)"
         
         if returncode == 0:
