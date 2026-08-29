@@ -1,0 +1,26 @@
+{
+  "chain": "robinhood",
+  "chain_id": 4663,
+  "gas_token": "ETH",
+  "base_simulation_capital_usd": 60.0,
+  "accounting_model": {
+    "type": "recycled_closed_pnl_single_pool",
+    "base_equity_usd": 60.0,
+    "note": "All Robinhood paper PnL, including closed entries and active open positions, rolls into one cumulative equity number based on the original $60 base simulation capital. Completely isolated from Solana/Meteora dataset."
+  },
+  "exit_discipline": {
+    "defensive_rules": {
+      "oor_2_consecutive_checks": true,
+      "hard_stop_pct": -4.0,
+      "soft_stop_pct": -3.0,
+      "preferred_take_profit_pct": 3.0,
+      "take_profit_review_pct": 2.0,
+      "fee_decay_2_consecutive_checks": true
+    }
+  },
+  "cost_model": {
+    "network": "Robinhood Arbitrum Orbit L2",
+    "gas_per_roundtrip_usd": 0.15,
+    "txs_per_roundtrip": 3
+  }
+}
