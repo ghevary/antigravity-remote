@@ -15,6 +15,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
+import urllib.request
 from typing import Dict, Any, Optional, List, Tuple
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -182,6 +183,80 @@ class TaskManager:
             return self.active_task_info
 
 task_manager = TaskManager()
+
+# ==========================================
+# Telegram Live Progress Dispatcher
+# ==========================================
+_last_tg_progress = {"time": 0.0, "text": ""}
+_tg_progress_lock = threading.Lock()
+
+def get_telegram_target(auth_header: str) -> Tuple[str, str]:
+    profile = "ghepappo"
+    if auth_header and "bearer" in auth_header.lower():
+        parts = auth_header.split()
+        if len(parts) >= 2:
+            key = parts[1].strip().lower()
+            if key in ["ghepappo", "kodingin", "ghe_nnn", "default"]:
+                profile = key
+            elif key.startswith("antigravity-"):
+                profile = key.replace("antigravity-", "")
+
+    env_path = f"/root/.hermes/profiles/{profile}/.env" if profile != "default" else "/root/.hermes/.env"
+    if not os.path.exists(env_path):
+        env_path = "/root/.hermes/profiles/ghepappo/.env"
+
+    token = ""
+    chat_id = "5798094673"
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("TELEGRAM_BOT_TOKEN="):
+                        token = line.split("=", 1)[1].strip().strip('"\'')
+                    elif line.startswith("TELEGRAM_HOME_CHANNEL="):
+                        val = line.split("=", 1)[1].strip().strip('"\'')
+                        if val:
+                            chat_id = val
+        except Exception:
+            pass
+
+    if not token:
+        token = "8895371572:AAGWhqf4rwYpmgyOSBuiKbeVIht9fiGYJpY"
+
+    return token, chat_id
+
+def send_telegram_progress(token: str, chat_id: str, text: str):
+    if not token or not chat_id or not text:
+        return
+    now = time.time()
+    with _tg_progress_lock:
+        if text == _last_tg_progress["text"] and now - _last_tg_progress["time"] < 3.0:
+            return
+        if now - _last_tg_progress["time"] < 0.6:
+            time.sleep(0.6 - (now - _last_tg_progress["time"]))
+        _last_tg_progress["time"] = time.time()
+        _last_tg_progress["text"] = text
+
+    def _async_send():
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = json.dumps({
+                "chat_id": chat_id,
+                "text": text,
+                "disable_notification": True
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                pass
+        except Exception:
+            pass
+
+    threading.Thread(target=_async_send, daemon=True).start()
 
 # ==========================================
 # HTTP Request Handler
@@ -394,6 +469,8 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
             messages = body.get("messages", [])
             model = body.get("model", "gemini-3.7-flash-high")
             stream_mode = body.get("stream", False)
+            auth_header = self.headers.get("Authorization", "")
+            tg_token, tg_chat_id = get_telegram_target(auth_header)
             
             if not messages:
                 self._send_json(400, {"error": "Missing 'messages' array"})
@@ -525,7 +602,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                                             url = params.get("url") or params.get("Url") or "web page"
                                             action_msg = f"🌐 Visiting browser: {url}"
                                         elif tname == "run_command":
-                                            c = params.get("CommandLine", "")[:50]
+                                            c = params.get("CommandLine", "")[:60]
                                             action_msg = f"💻 Running: {c}"
                                         elif tname in ("search_web",):
                                             q = params.get("query", "")
@@ -534,6 +611,10 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                                             p = params.get("AbsolutePath") or params.get("TargetFile") or ""
                                             action_msg = f"📁 Accessing file: {os.path.basename(p) or p}"
 
+                                        # 1. Send live progress directly to Telegram as a SEPARATE update!
+                                        send_telegram_progress(tg_token, tg_chat_id, f"⚡ {action_msg}...")
+
+                                        # 2. To Hermes: Stream ONLY reasoning_content (keeps watchdog fresh, does NOT pollute AI content!)
                                         chunk_data = {
                                             "id": response_id,
                                             "object": "chat.completion.chunk",
@@ -541,7 +622,7 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                                             "model": model,
                                             "choices": [{
                                                 "index": 0,
-                                                "delta": {"content": f"\n⚡ {action_msg}...\n"},
+                                                "delta": {"reasoning_content": f"[Tool: {tname}] "},
                                                 "finish_reason": None
                                             }]
                                         }
