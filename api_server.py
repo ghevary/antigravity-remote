@@ -418,7 +418,8 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 "-p", combined_prompt,
                 "--dangerously-skip-permissions",
                 "--model", model,
-                "--print-timeout", "10m"
+                "--output-format", "stream-json",
+                "--print-timeout", "15m"
             ]
 
             start_t = time.time()
@@ -435,6 +436,9 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                 self.send_header("Connection", "keep-alive")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+
+                last_chunk_time = [time.time()]
+                stop_heartbeat = threading.Event()
 
                 try:
                     # Send initial role chunk immediately
@@ -454,6 +458,33 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f"data: {json.dumps(initial_chunk)}\n\n".encode("utf-8"))
                     self.wfile.flush()
 
+                    # Start background keepalive heartbeat (fires every 12s if model is thinking/silent)
+                    def heartbeat_worker():
+                        while not stop_heartbeat.is_set():
+                            time.sleep(10)
+                            if time.time() - last_chunk_time[0] >= 12.0:
+                                try:
+                                    self.wfile.write(b": keep-alive\n\n")
+                                    ping_chunk = {
+                                        "id": response_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": int(start_t),
+                                        "model": model,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"content": ""},
+                                            "finish_reason": None
+                                        }]
+                                    }
+                                    self.wfile.write(f"data: {json.dumps(ping_chunk)}\n\n".encode("utf-8"))
+                                    self.wfile.flush()
+                                    last_chunk_time[0] = time.time()
+                                except Exception:
+                                    break
+
+                    hb_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+                    hb_thread.start()
+
                     proc = subprocess.Popen(
                         cmd,
                         cwd=DEFAULT_WORKDIR,
@@ -464,27 +495,118 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                         env=sub_env
                     )
 
+                    accumulated_text = []
+
                     while True:
                         line = proc.stdout.readline()
                         if not line and proc.poll() is not None:
                             break
                         if line:
-                            # Stream text chunk
-                            chunk_data = {
-                                "id": response_id,
-                                "object": "chat.completion.chunk",
-                                "created": int(start_t),
-                                "model": model,
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {"content": line},
-                                        "finish_reason": None
-                                    }
-                                ]
-                            }
-                            self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
-                            self.wfile.flush()
+                            raw_line = line.strip()
+                            if not raw_line:
+                                continue
+
+                            try:
+                                ev = json.loads(raw_line)
+                                event_type = ev.get("event")
+
+                                if event_type == "step_update":
+                                    su = ev.get("step_update", {})
+                                    st = su.get("step_type")
+                                    state = su.get("state")
+
+                                    # Stream tool actions immediately to user
+                                    if st == "tool" and state == "ACTIVE":
+                                        tname = su.get("tool_name", "tool")
+                                        tinfo = su.get("tool_info", {})
+                                        params = tinfo.get("parameters", {})
+                                        action_msg = f"Executing: {tname}"
+                                        if "browser" in tname or tname in ("open_browser_url", "read_browser_page"):
+                                            url = params.get("url") or params.get("Url") or "web page"
+                                            action_msg = f"🌐 Visiting browser: {url}"
+                                        elif tname == "run_command":
+                                            c = params.get("CommandLine", "")[:50]
+                                            action_msg = f"💻 Running: {c}"
+                                        elif tname in ("search_web",):
+                                            q = params.get("query", "")
+                                            action_msg = f"🔍 Searching web: {q}"
+                                        elif tname in ("view_file", "replace_file_content", "write_to_file"):
+                                            p = params.get("AbsolutePath") or params.get("TargetFile") or ""
+                                            action_msg = f"📁 Accessing file: {os.path.basename(p) or p}"
+
+                                        chunk_data = {
+                                            "id": response_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(start_t),
+                                            "model": model,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"content": f"\n⚡ {action_msg}...\n"},
+                                                "finish_reason": None
+                                            }]
+                                        }
+                                        self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                                        self.wfile.flush()
+                                        last_chunk_time[0] = time.time()
+
+                                    # Stream real-time text tokens
+                                    elif su.get("text_delta"):
+                                        td = su.get("text_delta")
+                                        accumulated_text.append(td)
+                                        chunk_data = {
+                                            "id": response_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(start_t),
+                                            "model": model,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"content": td},
+                                                "finish_reason": None
+                                            }]
+                                        }
+                                        self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                                        self.wfile.flush()
+                                        last_chunk_time[0] = time.time()
+
+                                elif event_type == "result":
+                                    res_obj = ev.get("result", {})
+                                    final_resp = res_obj.get("response", "")
+                                    if final_resp and not accumulated_text:
+                                        chunk_data = {
+                                            "id": response_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(start_t),
+                                            "model": model,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"content": final_resp},
+                                                "finish_reason": None
+                                            }]
+                                        }
+                                        self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                                        self.wfile.flush()
+                                        last_chunk_time[0] = time.time()
+
+                            except json.JSONDecodeError:
+                                # Direct text chunk fallback
+                                chunk_data = {
+                                    "id": response_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": int(start_t),
+                                    "model": model,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": line},
+                                            "finish_reason": None
+                                        }
+                                    ]
+                                }
+                                self.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode("utf-8"))
+                                self.wfile.flush()
+                                last_chunk_time[0] = time.time()
+
+                    stop_heartbeat.set()
 
                     # Final finish chunk
                     final_chunk = {
@@ -505,10 +627,11 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
 
                 except (BrokenPipeError, ConnectionResetError):
-                    # Client disconnected or timed out
+                    stop_heartbeat.set()
                     if 'proc' in locals() and proc.poll() is None:
                         proc.terminate()
                 except Exception as e:
+                    stop_heartbeat.set()
                     if 'proc' in locals() and proc.poll() is None:
                         proc.terminate()
                     try:
@@ -527,10 +650,23 @@ class AntigravityAPIHandler(BaseHTTPRequestHandler):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
-                        timeout=600,
+                        timeout=900,
                         env=sub_env
                     )
-                    content_out = res.stdout.strip() if res.stdout else "Antigravity process completed."
+                    content_out = ""
+                    if res.stdout:
+                        for l in res.stdout.splitlines():
+                            try:
+                                j = json.loads(l.strip())
+                                if j.get("event") == "result":
+                                    content_out = j.get("result", {}).get("response", "")
+                                    break
+                            except Exception:
+                                pass
+                        if not content_out:
+                            content_out = res.stdout.strip()
+                    if not content_out:
+                        content_out = "Antigravity process completed."
 
                     self._send_json(200, {
                         "id": response_id,
