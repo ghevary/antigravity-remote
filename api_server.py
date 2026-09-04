@@ -36,6 +36,30 @@ API_KEY = os.getenv("API_KEY", "")
 # ==========================================
 ALL_MODELS = [
     {
+        "id": "gemini-3.8-flash-high",
+        "name": "Gemini 3.8 Flash (High Reasoning)",
+        "provider": "Google DeepMind",
+        "tier": "Flash",
+        "default_effort": "high",
+        "description": "Next-gen Gemini 3.8 Flash with maximum reasoning effort for advanced coding and tasks."
+    },
+    {
+        "id": "gemini-3.8-flash-medium",
+        "name": "Gemini 3.8 Flash (Medium Reasoning)",
+        "provider": "Google DeepMind",
+        "tier": "Flash",
+        "default_effort": "medium",
+        "description": "Fast and balanced Gemini 3.8 Flash model."
+    },
+    {
+        "id": "gemini-3.8-flash-low",
+        "name": "Gemini 3.8 Flash (Low Reasoning)",
+        "provider": "Google DeepMind",
+        "tier": "Flash",
+        "default_effort": "low",
+        "description": "Ultra-fast low-latency Gemini 3.8 Flash model."
+    },
+    {
         "id": "gemini-3.7-flash-high",
         "name": "Gemini 3.7 Flash (High Reasoning)",
         "provider": "Google DeepMind",

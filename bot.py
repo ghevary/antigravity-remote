@@ -56,6 +56,9 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 # Curated Model Catalog
 # ==========================================
 MODELS_CATALOG = [
+    ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+    ("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+    ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
     ("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
     ("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
     ("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
